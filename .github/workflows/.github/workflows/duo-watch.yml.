@@ -1,0 +1,48 @@
+name: Duo watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Aldrig två körningar samtidigt
+concurrency:
+  group: duo-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DUO_ZIP: ${{ secrets.DUO_ZIP }}
+      DUO_TOPIC: ${{ secrets.DUO_TOPIC }}
+      DUO_STATE_DIR: .duo-state
+    steps:
+      - uses: actions/checkout@v4
+
+      # Hämta förra körningens status så vi bara notifierar när något NYTT dyker upp
+      - name: Restore status
+        uses: actions/cache/restore@v4
+        with:
+          path: .duo-state
+          key: duo-state-${{ github.run_id }}
+          restore-keys: duo-state-
+
+      # Körs bara när du startar manuellt: visar butiker i loggen och skickar en testnotis
+      - name: Test (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: python3 duo_watch.py --test
+
+      - name: Check stock
+        run: python3 duo_watch.py --once
+
+      - name: Save status
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .duo-state
+          key: duo-state-${{ github.run_id }}
