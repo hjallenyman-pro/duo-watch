@@ -13,6 +13,7 @@ Behöver inget att installeras, bara Python 3.
 import json
 import os
 import random
+import re
 import sys
 import time
 import urllib.error
@@ -57,7 +58,7 @@ def build_url(parts, extra):
     params = list(extra) + [("location", ZIP)]
     for i, part in enumerate(parts):
         params.append((f"parts.{i}", part))
-    return "https://www.apple.com/shop/fulfillment-messages?" + urllib.parse.urlencode(params)
+    return "https://www.apple.com/shop/retail/pickup-message?" + urllib.parse.urlencode(params)
 
 
 def get_json(url):
@@ -107,12 +108,51 @@ def diagnose():
         time.sleep(2)
 
 
+def find_key(obj, key):
+    """Letar rekursivt efter en lista under nyckeln `key`, var den än ligger i svaret."""
+    if isinstance(obj, dict):
+        if isinstance(obj.get(key), list):
+            return obj[key]
+        children = obj.values()
+    elif isinstance(obj, list):
+        children = obj
+    else:
+        return None
+    for child in children:
+        found = find_key(child, key)
+        if found is not None:
+            return found
+    return None
+
+
+PART_RE = re.compile(r"^[A-Z0-9]{5,8}/A$")
+
+
+def store_parts(s):
+    """Hittar (artikelnummer, info) för en butik. Först det vanliga fältet, annars leta själv."""
+    parts = s.get("partsAvailability")
+    if isinstance(parts, dict) and parts:
+        return list(parts.items())
+    found = []
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if PART_RE.match(str(k)) and isinstance(v, dict) and "pickupDisplay" in v:
+                    found.append((k, v))
+                else:
+                    walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(s)
+    return found
+
+
 def parse(data):
     """Plockar ut en rad per (butik, variant) ur Apples svar."""
-    try:
-        stores = data["body"]["content"]["pickupMessage"]["stores"]
-    except (KeyError, TypeError):
-        raise ValueError("Oväntat svar från Apple: " + json.dumps(data)[:300])
+    stores = find_key(data, "stores")
+    if stores is None:
+        raise ValueError("Oväntat svar från Apple (ingen butikslista): " + json.dumps(data)[:300])
 
     rows = []
     for s in stores:
@@ -125,7 +165,7 @@ def parse(data):
         if MAX_MILES is not None and miles is not None and miles > MAX_MILES:
             continue
 
-        for part, info in (s.get("partsAvailability") or {}).items():
+        for part, info in store_parts(s):
             title = (
                 info.get("storePickupProductTitle")
                 or (info.get("messageTypes") or {}).get("regular", {}).get("storePickupProductTitle")
