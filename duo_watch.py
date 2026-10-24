@@ -50,28 +50,61 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def fetch():
-    """Frågar Apple om hämta-i-butik-status för alla varianter nära ZIP."""
-    params = [
-        ("pl", "true"),
-        ("mts.0", "regular"),
-        ("mts.1", "compact"),
-        ("searchNearby", "true"),
-        ("location", ZIP),
-    ]
-    for i, part in enumerate(VARIANTS):
+FULL_EXTRA = [("pl", "true"), ("mts.0", "regular"), ("mts.1", "compact"), ("searchNearby", "true")]
+
+
+def build_url(parts, extra):
+    params = list(extra) + [("location", ZIP)]
+    for i, part in enumerate(parts):
         params.append((f"parts.{i}", part))
-    url = "https://www.apple.com/shop/fulfillment-messages?" + urllib.parse.urlencode(params)
+    return "https://www.apple.com/shop/fulfillment-messages?" + urllib.parse.urlencode(params)
+
+
+def get_json(url):
     req = urllib.request.Request(
         url,
         headers={
             "User-Agent": USER_AGENT,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.apple.com/shop/buy-iphone/iphone-duo",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:300].replace("\n", " ")
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {body}") from None
+
+
+def fetch():
+    """Frågar Apple om hämta-i-butik-status för alla varianter nära ZIP."""
+    return get_json(build_url(list(VARIANTS), FULL_EXTRA))
+
+
+def diagnose():
+    """Provar olika varianter av anropet för att se vad Apple accepterar."""
+    log("Felsökning: provar olika varianter av anropet ...")
+    first = next(iter(VARIANTS))
+    tests = [("alla varianter, fulla parametrar", list(VARIANTS), FULL_EXTRA),
+             ("en variant, fulla parametrar", [first], FULL_EXTRA),
+             ("en variant, bara postnummer", [first], []),
+             ("en variant, utan searchNearby", [first], [("mts.0", "regular"), ("mts.1", "compact")])]
+    for part, (label, _) in VARIANTS.items():
+        tests.append((f"bara {label}, minimalt anrop", [part], []))
+    for label, parts, extra in tests:
+        try:
+            data = get_json(build_url(parts, extra))
+            stores = data.get("body", {}).get("content", {}).get("pickupMessage", {}).get("stores")
+            log(f"OK   {label}: {len(stores) if stores is not None else '?'} butiker")
+        except Exception as e:
+            log(f"FEL  {label}: {e}")
+        time.sleep(2)
 
 
 def parse(data):
@@ -174,7 +207,13 @@ def check(rows, old_state, notify=notify_available):
 
 def run_test():
     log(f"Testar mot Apple för postnummer {ZIP} ...")
-    rows = parse(fetch())
+    try:
+        rows = parse(fetch())
+    except Exception as e:
+        log(f"Felet: {e}")
+        diagnose()
+        send_push("Duo-boten: testet misslyckades", str(e)[:200], priority="3", tags="warning")
+        sys.exit(1)
     if not rows:
         log("Apple svarade, men inga butiker/varianter hittades. Kolla ZIP och artikelnummer.")
     else:
