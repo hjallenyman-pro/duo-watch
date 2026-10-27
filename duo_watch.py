@@ -299,39 +299,6 @@ def run_once():
     sys.exit(code)
 
 
-def run_loop(minutes):
-    """Kollar Apple varje minut i `minutes` minuter. Används av GitHub Actions (en körning per timme)."""
-    os.makedirs(STATE_DIR, exist_ok=True)
-    state = load_state()
-    deadline = time.time() + minutes * 60
-    fails = 0
-    warned = False
-    log(f"Loop: kollar varje minut i {minutes} minuter.")
-    while time.time() < deadline:
-        started = time.time()
-        try:
-            rows = parse(fetch())
-            state = check(rows, state)
-            save_state(state)
-            available = sum(1 for r in rows if r["status"] == "available")
-            log(f"{len(rows)} kontroller, {available} tillgängliga.")
-            fails = 0
-            warned = False
-        except Exception as e:
-            fails += 1
-            log(f"Fel ({fails} i rad): {e}")
-            if fails >= 6 and not warned:
-                send_push("Duo-boten har problem", f"Sex fel i rad: {str(e)[:150]}", priority="3", tags="warning")
-                warned = True
-        # Vänta till nästa hela minut, men inte längre än att vi hinner gå ut ur loopen i tid
-        pause = max(0, 60 - (time.time() - started))
-        if time.time() + pause >= deadline:
-            break
-        time.sleep(pause)
-    log("Loop klar.")
-    sys.exit(0)
-
-
 def main():
     if not ZIP or not NTFY_TOPIC:
         sys.exit("DUO_ZIP och DUO_TOPIC måste vara satta.")
@@ -341,11 +308,6 @@ def main():
             return
     if "--once" in sys.argv:
         run_once()
-        return
-    if "--loop" in sys.argv:
-        i = sys.argv.index("--loop")
-        minutes = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 else 55
-        run_loop(minutes)
         return
 
     state = load_state()
